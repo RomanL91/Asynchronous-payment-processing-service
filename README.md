@@ -1,5 +1,16 @@
 # Асинхронный сервис процессинга платежей
 
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?style=flat-square&logo=fastapi&logoColor=white)
+![Pydantic](https://img.shields.io/badge/Pydantic-v2-E92063?style=flat-square&logo=pydantic&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0_async-D71F00?style=flat-square&logo=sqlalchemy&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-FF6600?style=flat-square&logo=rabbitmq&logoColor=white)
+![FastStream](https://img.shields.io/badge/FastStream-0.7-2D3748?style=flat-square)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Jaeger-425CC7?style=flat-square&logo=opentelemetry&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/Docker_Compose-ready-2496ED?style=flat-square&logo=docker&logoColor=white)
+[![Автор](https://img.shields.io/badge/%D0%B0%D0%B2%D1%82%D0%BE%D1%80-rlebedev.dev-F59E0B?style=flat-square&labelColor=0C0B09)](https://info.rlebedev.dev/)
+
 Микросервисная система приёма и обработки платежей: API принимает платёж и сразу отвечает `202 Accepted`, обработка идёт асинхронно через RabbitMQ и эмулятор платёжного шлюза, клиент получает итог webhook-ом.
 
 **Стек:** Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy 2.0 (async, asyncpg) · PostgreSQL 16 · RabbitMQ 3.13 · FastStream 0.7 · Alembic · Docker Compose.
