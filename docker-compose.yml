@@ -1,0 +1,188 @@
+name: payments-processing
+
+# ---------------------------------------------------------------------------
+# Общие блоки окружения
+# ---------------------------------------------------------------------------
+x-broker-env: &broker-env
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  RABBITMQ_PREFETCH_COUNT: ${RABBITMQ_PREFETCH_COUNT:-16}
+  # Параметры ретраев материализуются в TTL retry-очередей,
+  # поэтому обязаны совпадать у всех сервисов — отсюда общий блок.
+  RABBITMQ_RETRY_MAX_ATTEMPTS: ${RETRY_MAX_ATTEMPTS:-3}
+  RABBITMQ_RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-1000}
+  RABBITMQ_RETRY_MULTIPLIER: ${RETRY_MULTIPLIER:-2}
+
+x-tracing-env: &tracing-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+
+x-payments-env: &payments-env
+  <<: [*broker-env, *tracing-env]
+  PAYMENTS_DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
+  PAYMENTS_API_KEY: ${API_KEY:-secret-api-key}
+  PAYMENTS_OUTBOX_BATCH_SIZE: 100
+  PAYMENTS_OUTBOX_POLL_INTERVAL_S: 0.5
+  PAYMENTS_WEBHOOK_TIMEOUT_S: 5
+
+x-payments-image: &payments-image
+  build:
+    context: .
+    dockerfile: services/payments/Dockerfile
+  image: payments-service:local
+  environment: *payments-env
+  restart: unless-stopped
+
+x-payments-depends: &payments-depends
+  postgres:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+  payments-migrations:
+    condition: service_completed_successfully
+
+services:
+  # -------------------------------------------------------------------------
+  # Инфраструктура
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672" # UI: http://localhost:15672 (guest/guest)
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    ports:
+      - "16686:16686" # UI: http://localhost:16686
+
+  # -------------------------------------------------------------------------
+  # payments-service: владелец данных (один образ — четыре роли)
+  # -------------------------------------------------------------------------
+  payments-migrations:
+    <<: *payments-image
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  payments-api:
+    <<: *payments-image
+    command:
+      ["uvicorn", "payments_service.presentation.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *payments-env
+      # Процессы uvicorn: свой пул БД у каждого. Бюджет соединений Postgres (max_connections=100):
+      # api 4 × (5+5) + relay 15 + consumer 15 = 70.
+      UVICORN_WORKERS: ${API_WORKERS:-4}
+      PAYMENTS_DATABASE_POOL_SIZE: 5
+      PAYMENTS_DATABASE_MAX_OVERFLOW: 5
+      UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN: 20
+      UVICORN_SERVER_HEADER: "false"
+      # Каждый запрос и так виден в Jaeger
+      UVICORN_ACCESS_LOG: "false"
+    stop_grace_period: 30s
+    ports:
+      - "8000:8000" # Swagger: http://localhost:8000/docs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on: *payments-depends
+
+  payments-relay:
+    <<: *payments-image
+    command: ["python", "-m", "payments_service.presentation.relay"]
+    depends_on: *payments-depends
+
+  payments-consumer:
+    <<: *payments-image
+    command: ["python", "-m", "payments_service.presentation.consumer"]
+    depends_on: *payments-depends
+
+  # -------------------------------------------------------------------------
+  # processor-service: stateless-обработчик
+  # -------------------------------------------------------------------------
+  processor:
+    build:
+      context: .
+      dockerfile: services/processor/Dockerfile
+    image: processor-service:local
+    environment:
+      <<: [*broker-env, *tracing-env]
+      # Процессор без БД и почти всё время ждёт шлюз — ему нужна своя, большая конкурентность.
+      # Не выше лимита соединений httpx-клиента (100 по умолчанию), иначе сообщения ждут пул.
+      RABBITMQ_PREFETCH_COUNT: ${PROCESSOR_PREFETCH_COUNT:-100}
+      PROCESSOR_GATEWAY_URL: http://gateway-mock:8001
+      PROCESSOR_GATEWAY_TIMEOUT_S: 15
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      gateway-mock:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------------
+  # Внешний мир (эмуляция)
+  # -------------------------------------------------------------------------
+  gateway-mock:
+    build:
+      context: .
+      dockerfile: services/gateway_mock/Dockerfile
+    image: gateway-mock:local
+    environment:
+      GATEWAY_SUCCESS_RATE: ${GATEWAY_SUCCESS_RATE:-0.9}
+      GATEWAY_MIN_LATENCY_S: ${GATEWAY_MIN_LATENCY_S:-2}
+      GATEWAY_MAX_LATENCY_S: ${GATEWAY_MAX_LATENCY_S:-5}
+      GATEWAY_TRANSIENT_FAILURE_RATE: ${GATEWAY_TRANSIENT_FAILURE_RATE:-0}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Витрина проекта: статичная страница, точка входа после compose up
+  landing:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./landing:/usr/share/nginx/html:ro
+    ports:
+      - "8090:80" # http://localhost:8090
+    restart: unless-stopped
+
+  # Получатель webhook для демонстрации: /anything/... → 200,
+  # /status/503 → временная ошибка (ретраи → DLQ), /status/404 → сразу DLQ.
+  webhook-receiver:
+    image: mccutchen/go-httpbin:latest
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

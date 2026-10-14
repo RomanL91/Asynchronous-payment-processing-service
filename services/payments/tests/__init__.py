@@ -1,0 +1,1 @@
+"""Тесты payments-service."""

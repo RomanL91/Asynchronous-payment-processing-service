@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Локальное окружение (шаблон — .env.example)
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Рабочие спеки и планы
+docs/superpowers/
