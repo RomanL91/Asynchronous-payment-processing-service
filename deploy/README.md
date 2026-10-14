@@ -8,7 +8,7 @@
 | https://mkk-bazis-testovoe.rlebedev.dev | витрина | 8090 |
 | https://mkk-bazis-testovoe-api.rlebedev.dev/docs | payments-api, Swagger | 8000 |
 | https://mkk-bazis-testovoe-jaeger.rlebedev.dev | Jaeger | 16686 |
-| https://mkk-bazis-testovoe-rabbitmq.rlebedev.dev | RabbitMQ UI, вход `demo` / `demo` (только просмотр) | 15672 |
+| https://mkk-bazis-testovoe-rabbitmq.rlebedev.dev | RabbitMQ UI, вход `demo` / `demo` (только просмотр очередей и счётчиков) | 15672 |
 | https://mkk-bazis-testovoe-gateway.rlebedev.dev/docs | эмулятор шлюза | 8001 |
 | https://mkk-bazis-testovoe-webhook.rlebedev.dev | получатель webhook | 8080 |
 
@@ -21,10 +21,11 @@ printf 'RABBITMQ_ADMIN_USER=admin\nRABBITMQ_ADMIN_PASSWORD=%s\n' "$(openssl rand
 
 docker compose -f docker-compose.yml -f deploy/docker-compose.server.yml up -d --build
 
-# пользователь RabbitMQ UI для посетителей: видит всё, изменить ничего не может
+# пользователь RabbitMQ UI для посетителей: видит очереди и счётчики, ничего не может изменить
+# (право read не даём: в RabbitMQ оно же разрешает очистку очереди и забор сообщений)
 docker compose exec rabbitmq rabbitmqctl add_user demo demo
 docker compose exec rabbitmq rabbitmqctl set_user_tags demo monitoring
-docker compose exec rabbitmq rabbitmqctl set_permissions -p / demo '^$' '^$' '.*'
+docker compose exec rabbitmq rabbitmqctl set_permissions -p / demo '^$' '^$' '^$'
 ```
 
 Обновление: `git pull`, затем та же команда `up -d --build`.
@@ -59,8 +60,11 @@ docker compose exec rabbitmq rabbitmqctl set_permissions -p / demo '^$' '^$' '.*
 
 - **SSRF.** `webhook_url` задаёт посетитель, а вебхук отправляет сервер. Поэтому
   payments-consumer (и processor, relay) подключены только к сети `internal: true`:
-  им видны контейнеры стенда, но не домашняя сеть и не интернет.
+  им видны контейнеры стенда, но не домашняя сеть и не интернет. Вебхук на внешний
+  адрес после трёх попыток уходит в `payments.processed.dlq`; для демо используйте
+  `http://webhook-receiver:8080/anything/…`.
 - **RabbitMQ.** Сервисы ходят под администратором из `.env`; посетители входят как
-  `demo` с тегом `monitoring` и правами только на чтение.
+  `demo` с тегом `monitoring` без прав на ресурсы: видят очереди и счётчики, но не могут
+  ни очистить очередь, ни забрать или отправить сообщение.
 - **API-ключ** `secret-api-key` открыт на витрине намеренно: это демо, платежи
   проходят через эмулятор шлюза.
